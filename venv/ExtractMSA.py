@@ -12,7 +12,7 @@ from os.path import isfile, join
 import sys
 from Bio import SeqIO, AlignIO
 from Bio.Align.Applications import ClustalwCommandline
-from Bio.PDB import PDBParser, PDBIO
+from Bio.PDB import PDBParser, PDBIO, Superimposer
 from Bio.AlignIO import ClustalIO
 import mdtraj as md
 import tempfile
@@ -105,14 +105,104 @@ def getAlignment(tmpPDBFP):
     consensus = align.column_annotations["clustal_consensus"]           # Get the consensus line (bottom line in file)
     matches = [i for i, letter in enumerate(consensus) if letter == "*"]    # Get indices of all full alignments
 
-    fullyAligned = {}
+    fullyAligned["original"] = consensus
 
     for protein in align:                                               # Get indexes of fully aligned amino acids
         # Generate a list of the actual indices of full alignment for each protein. The alignment offset accounts for
         # the gaps in the Clustal output
-        fullyAligned[protein.id] = [match - alignmentOffset[protein.id.replace(":", "_")][match] + 1 for match in matches]
+        fullyAligned[protein.id] = \
+            [match - alignmentOffset[protein.id.replace(":", "_")][match] + 1 for match in matches]
+
+        #for i in range()
+
+    # Remove any alignment indices that we don't have residue data for
+    # Note: the ClustalW alignment uses the known residues, but we don't necessarily have the coordinates
+    #       of all of the atoms comprising each residue. As a result, we remove all of the indices of the atoms
+    #       that may be in alignment, but we don't have their coordinates
+
+    parser = PDBParser()
+    starting_indices = []
+    ending_indices = []
+
+    # Find the starting index of known atomic coordinates
+    for protein, file in zip(rec_list, input_files):  # Loop thru each protein and PDB file
+        structure = parser.get_structure(protein.id, file)  # Get the structure of each protein
+
+        tmpMissing = structure.che
+
+        for model in structure:
+            for chain in model:
+                if chain.get_id() == "A":  # Only keeping 'A' chains
+                    #starting_indices.append(-1)
+                    #ending_indices.append(-1)
+
+                    starting_indices.append(list(chain)[0].get_id()[1])
+                    ending_indices.append(list(chain)[-1].get_id()[1])
+
+                    print(starting_indices[0])
+
+                    for residue in list(chain):
+                        resPosition = residue.get_id()[1]
+
+                        '''
+                        if starting_indices[-1] == -1 or resPosition < starting_indices[-1]:
+                            starting_indices[-1] = resPosition
+
+                        if ending_indices[-1] == -1 or resPosition > ending_indices[-1]:
+                            ending_indices[-1] = resPosition
+                        '''
+
+    for protein, indices in fullyAligned.items():
+        for index in indices:
+            if index < max(starting_indices):
+                fullyAligned[protein].remove(index)
 
     return fullyAligned
+
+def getAlignedStructure(rec_list, input_files, fullyAligned):
+    '''
+    Create a dict containing only the residues that have full alignment
+    :param rec_list: list of protein records
+    :param input_files: list of all input PDB files
+    :return: PDB structure containing only fully aligned residues
+    '''
+
+    proteins = {}
+
+    parser = PDBParser()
+    io = PDBIO()
+
+    for protein, file in zip(rec_list, input_files):  # Loop thru each protein and PDB file
+        structure = parser.get_structure(protein.id, file)  # Get the structure of each protein
+
+        if structure.get_id() != "2V5W:A":
+            continue
+
+        for model in structure:
+            for chain in model:
+                if chain.get_id() == "A":  # Only keeping 'A' chains
+                    print(fullyAligned[protein.id.replace(":", "_")])
+                    print("Res      Aligned")
+
+                    count = 0
+
+                    for residue in list(chain):
+                        # Remove all residues that aren't fully aligned
+                        num = residue.get_id()[1]
+
+                        if num not in fullyAligned[protein.id.replace(":", "_")]:
+                            chain.detach_child(residue.get_id())
+                        else:
+                            count += 1
+
+                        print(num, "\t\t", num in fullyAligned[protein.id.replace(":", "_")], "\t\t", count)
+                else:
+                    model.detach_child(chain.get_id())  # Remove all non-'A' chains
+
+        io.set_structure(structure)  # Make sure structure is OK
+        proteins[structure.get_id()] = structure
+
+    return proteins
 
 def writeDCDFile(rec_list, input_files, output_dir):
     '''
@@ -128,18 +218,6 @@ def writeDCDFile(rec_list, input_files, output_dir):
     for protein, file in zip(rec_list, input_files):                    # Loop thru each protein and PDB file
         structure = parser.get_structure(protein.id, file)              # Get the structure of each protein
 
-        for model in structure:
-            for chain in model:
-                if chain.get_id() == "A":                               # Only keeping 'A' chains
-                    for residue in list(chain):
-                        # Remove all residues that aren't fully aligned
-                        if residue.get_id()[1] not in fullyAligned[protein.id.replace(":", "_")]:
-                            chain.detach_child(residue.get_id())
-                else:
-                    model.detach_child(chain.get_id())                  # Remove all non-'A' chains
-
-        io.set_structure(structure)                                     # Make sure structure is OK
-
         with tempfile.NamedTemporaryFile(mode='w+') as fp:              # Using temp file to store partial PDB
             io.save(fp.name)
             traj = md.load_pdb(fp.name)                                 # Convert PDB to DCD file
@@ -149,4 +227,37 @@ inputs_dir, output_dir, input_files = getInputs(sys)                    # Get th
 tmpFASTAFP, rec_list = getSequences(input_files)                        # Get the sequences
 tmpPDBFP = runClustal(tmpFASTAFP)                                       # Run the multiple sequence alignment
 fullyAligned = getAlignment(tmpPDBFP)                                   # Get the alignment offsets (for gaps)
-writeDCDFile(rec_list, input_files, output_dir)                         # Write the aligned atoms to a .dcd file
+proteins = getAlignedStructure(rec_list, input_files, fullyAligned)
+#writeDCDFile(rec_list, input_files, output_dir)                         # Write the aligned atoms to a .dcd file
+
+carbon_atoms = {}
+
+for structure in proteins.values():
+    for model in structure:
+        for chain in model:
+            if chain.get_id() == "A":                                   # Only keeping 'A' chains
+                carbons = []
+
+                print(len(list(chain)))
+
+                for residue in list(chain):
+                    if residue.has_id("CA"):
+                        carbons.append((residue["CA"]))
+                    elif residue.has_id("CB"):
+                        carbons.append((residue["CB"]))
+
+        carbon_atoms[structure.get_id()] = carbons
+        print(structure.get_id(), carbon_atoms[structure.get_id()])
+
+keys = list(carbon_atoms)
+
+sup = Superimposer()
+# Specify the atom lists
+# 'fixed' and 'moving' are lists of Atom objects
+
+for i in range(1, len(keys) - 2):
+    sup.set_atoms(carbon_atoms[keys[0]], carbon_atoms[keys[i]])
+    sup.apply(carbon_atoms[keys[i]])
+
+
+
