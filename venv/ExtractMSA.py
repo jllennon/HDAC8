@@ -16,6 +16,7 @@ from Bio.PDB import PDBParser, PDBIO, Superimposer
 from Bio.AlignIO import ClustalIO
 import mdtraj as md
 import tempfile
+import numpy as np
 
 def getInputs(args):
     '''
@@ -75,46 +76,60 @@ def runClustal(tmpFASTAFP):
 
     return tmpPDBFP
 
-def getAlignment(tmpPDBFP):
+def getConsensusSequences(tmpPDBFP):
+    align = AlignIO.read(tmpPDBFP.name, "clustal")  # Read in the ClustalW file
+    tmpPDBFP.close()
+
+    alignment_offset = {}
+
+    for protein in align:                                               # Loop thru and get each protein
+        alignment_offset[protein.id] = [0]
+
+        for index, letter in enumerate(protein.seq):                    # Compare each letter to the gap
+            if index == 0:                                              # Check first letter
+                if letter == "-":                                       # Initial letter is a gap
+                    alignment_offset[protein.id] = [1]
+            else:                                                       # Check (not first) letter
+                prev = alignment_offset[protein.id][index - 1]
+
+                if letter == "-":                                       # The letter is a gap, add to offset
+                    alignment_offset[protein.id].append(prev + 1)
+                else:                                                   # The letter is not a gap
+                    alignment_offset[protein.id].append(prev)
+
+    consensus = align.column_annotations["clustal_consensus"]           # Get the consensus line (bottom line in file)
+    matches = [i for i, letter in enumerate(consensus) if letter == "*"]    # Get indices of all full alignments
+
+    fully_aligned = {}
+    fully_aligned["original"] = matches
+
+    for protein in align:                                               # Get indexes of fully aligned amino acids
+        # Generate a list of the actual indices of full alignment for each protein. The alignment offset accounts for
+        # the gaps in the Clustal output
+        fully_aligned[protein.id] = \
+            [match - alignment_offset[protein.id.replace(":", "_")][match] + 1 for match in matches]
+
+    return fully_aligned
+
+def stripHetAtoms(structure):
+    for model in structure:
+        for chain in model:
+            if chain.get_id() == "A":  # Only keeping 'A' chains
+                for residue in list(chain):
+                    if residue.get_id()[0] != " ":     # Don't want to keep hetero residues or atoms
+                        chain.detach_child(residue.get_id())
+
+    return structure
+
+
+def getAlignedSequence(tmpPDBFP):
     '''
     Use the Clustal alignment file to get slices of alignment
     :param tmpPDBFP: file pointer to Clustal alignment output
     :return: Dictionary containing the indexes that have full residue alignment for each protein
     '''
 
-    alignmentOffset = {}
-
-    align = AlignIO.read(tmpPDBFP.name, "clustal")                      # Read in the ClustalW file
-    tmpPDBFP.close()
-
-    for protein in align:                                               # Loop thru and get each protein
-        alignmentOffset[protein.id] = [0]
-
-        for index, letter in enumerate(protein.seq):                    # Compare each letter to the gap
-            if index == 0:                                              # Check first letter
-                if letter == "-":                                       # Initial letter is a gap
-                    alignmentOffset[protein.id] = [1]
-            else:                                                       # Check (not first) letter
-                prev = alignmentOffset[protein.id][index - 1]
-
-                if letter == "-":                                       # The letter is a gap, add to offset
-                    alignmentOffset[protein.id].append(prev + 1)
-                else:                                                   # The letter is not a gap
-                    alignmentOffset[protein.id].append(prev)
-
-    consensus = align.column_annotations["clustal_consensus"]           # Get the consensus line (bottom line in file)
-    matches = [i for i, letter in enumerate(consensus) if letter == "*"]    # Get indices of all full alignments
-
-    fullyAligned = {}
-    fullyAligned["original"] = consensus
-
-    for protein in align:                                               # Get indexes of fully aligned amino acids
-        # Generate a list of the actual indices of full alignment for each protein. The alignment offset accounts for
-        # the gaps in the Clustal output
-        fullyAligned[protein.id] = \
-            [match - alignmentOffset[protein.id.replace(":", "_")][match] + 1 for match in matches]
-
-        #for i in range()
+    fully_aligned = getConsensusSequences(tmpPDBFP)
 
     # Remove any alignment indices that we don't have residue data for
     # Note: the ClustalW alignment uses the known residues, but we don't necessarily have the coordinates
@@ -126,40 +141,37 @@ def getAlignment(tmpPDBFP):
     ending_indices = []
 
     # Find the starting index of known atomic coordinates
-    for protein, file in zip(rec_list, input_files):  # Loop thru each protein and PDB file
+    for protein, file in zip(rec_list, input_files):    # Loop thru each protein and PDB file
         structure = parser.get_structure(protein.id, file)  # Get the structure of each protein
 
-        #tmpMissing = structure.che
+        structure = stripHetAtoms(structure)            # Strip off hetero atoms
 
         for model in structure:
             for chain in model:
                 if chain.get_id() == "A":  # Only keeping 'A' chains
-                    #starting_indices.append(-1)
-                    #ending_indices.append(-1)
+                    starting_indices.append(-1)
+                    ending_indices.append(-1)
 
-                    starting_indices.append(list(chain)[0].get_id()[1])
-                    ending_indices.append(list(chain)[-1].get_id()[1])
-
-                    print(starting_indices[0])
+                    #starting_indices.append(list(chain)[0].get_id()[1])
+                    #ending_indices.append(list(chain)[-1].get_id()[1])
 
                     for residue in list(chain):
                         resPosition = residue.get_id()[1]
+                        print(structure.get_id(), chain.get_id(), resPosition)
 
-                        '''
                         if starting_indices[-1] == -1 or resPosition < starting_indices[-1]:
                             starting_indices[-1] = resPosition
 
                         if ending_indices[-1] == -1 or resPosition > ending_indices[-1]:
                             ending_indices[-1] = resPosition
-                        '''
 
-    for protein, indices in fullyAligned.items():
+    for protein, indices in fully_aligned.items():
         if protein is not "original":
             for index in indices:
                 if index < max(starting_indices):
-                    fullyAligned[protein].remove(index)
+                    fully_aligned[protein].remove(index)
 
-    return fullyAligned
+    return fully_aligned
 
 def cleanStructures(proteins):
     carbon_atoms = {}
@@ -170,26 +182,13 @@ def cleanStructures(proteins):
                 if chain.get_id() == "A":  # Only keeping 'A' chains
                     carbons = []
 
-                    #print(len(list(chain)))
-
                     for residue in list(chain):
                         if residue.has_id("CA"):
-                            carbons.append((residue["CA"]))
+                            carbons.append(residue["CA"])
                         elif residue.has_id("CB"):
-                            carbons.append((residue["CB"]))
+                            carbons.append(residue["CB"])
 
             carbon_atoms[structure.get_id()] = carbons
-            #print(structure.get_id(), carbon_atoms[structure.get_id()])
-
-    keys = list(carbon_atoms)
-
-    for name, protein in proteins.items():
-        for chains in protein:
-            for chain in chains:
-                if chain.get_id() == "A":
-                    for residue in chain:
-                        tmp = residue.get_atoms()
-
 
 def getAlignedStructure(rec_list, input_files, fullyAligned):
     '''
@@ -261,7 +260,7 @@ def writeDCDFile(rec_list, input_files, output_dir):
 inputs_dir, output_dir, input_files = getInputs(sys)                    # Get the provided inputs
 tmpFASTAFP, rec_list = getSequences(input_files)                        # Get the sequences
 tmpPDBFP = runClustal(tmpFASTAFP)                                       # Run the multiple sequence alignment
-fullyAligned = getAlignment(tmpPDBFP)                                   # Get the alignment offsets (for gaps)
+fullyAligned = getAlignedSequence(tmpPDBFP)                                   # Get the alignment offsets (for gaps)
 proteins = getAlignedStructure(rec_list, input_files, fullyAligned)
 #writeDCDFile(rec_list, input_files, output_dir)                         # Write the aligned atoms to a .dcd file
 
