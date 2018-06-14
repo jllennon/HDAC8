@@ -45,11 +45,7 @@ def getSequences(input_files):
     for seq in input_files:                                 # Open each PDB file
         for record in SeqIO.parse(seq, "pdb-seqres"):       # Get each chain
             if record.annotations["chain"] == "A":          # Only write the "A" Chain
-                tmpFASTAFP.write(record.format("fasta"))   # Write as a FASTA file
-
-                # Uncomment the line below if you would like to see the protein's code and sequence
-                #print(record.format("fasta"))
-
+                tmpFASTAFP.write(record.format("fasta"))    # Write as a FASTA file
                 rec_list.append(record)
                 break
 
@@ -121,6 +117,31 @@ def stripHetAtoms(structure):
 
     return structure
 
+def keepConsensusResidues(rec_list, input_files):
+    parser = PDBParser()
+    io = PDBIO()
+
+    proteins = {}
+
+    for protein, file in zip(rec_list, input_files):  # Loop thru each protein and PDB file
+        structure = parser.get_structure(protein.id, file)  # Get the structure of each protein
+
+        for model in structure:
+            for chain in model:
+                if chain.get_id() == "A":  # Only keeping 'A' chains
+                    for residue in list(chain):
+                        # Remove all residues that aren't fully aligned
+                        num = residue.get_id()[1]
+
+                        if num not in fullyAligned[protein.id.replace(":", "_")]:
+                            chain.detach_child(residue.get_id())
+                else:
+                    model.detach_child(chain.get_id())  # Remove all non-'A' chains
+
+        io.set_structure(structure)  # Make sure structure is OK
+        proteins[structure.get_id()] = structure
+
+    return proteins
 
 def getAlignedSequence(tmpPDBFP):
     '''
@@ -149,21 +170,8 @@ def getAlignedSequence(tmpPDBFP):
         for model in structure:
             for chain in model:
                 if chain.get_id() == "A":  # Only keeping 'A' chains
-                    starting_indices.append(-1)
-                    ending_indices.append(-1)
-
-                    #starting_indices.append(list(chain)[0].get_id()[1])
-                    #ending_indices.append(list(chain)[-1].get_id()[1])
-
-                    for residue in list(chain):
-                        resPosition = residue.get_id()[1]
-                        print(structure.get_id(), chain.get_id(), resPosition)
-
-                        if starting_indices[-1] == -1 or resPosition < starting_indices[-1]:
-                            starting_indices[-1] = resPosition
-
-                        if ending_indices[-1] == -1 or resPosition > ending_indices[-1]:
-                            ending_indices[-1] = resPosition
+                    starting_indices.append(list(chain)[0].get_id()[1])     # Get the first residue ID
+                    ending_indices.append(list(chain)[-1].get_id()[1])      # Get the last residue ID
 
     for protein, indices in fully_aligned.items():
         if protein is not "original":
@@ -173,7 +181,7 @@ def getAlignedSequence(tmpPDBFP):
 
     return fully_aligned
 
-def cleanStructures(proteins):
+def getCarbonAtoms(proteins):
     carbon_atoms = {}
 
     for structure in proteins.values():
@@ -190,6 +198,8 @@ def cleanStructures(proteins):
 
             carbon_atoms[structure.get_id()] = carbons
 
+    return carbon_atoms
+
 def getAlignedStructure(rec_list, input_files, fullyAligned):
     '''
     Create a dict containing only the residues that have full alignment
@@ -198,42 +208,8 @@ def getAlignedStructure(rec_list, input_files, fullyAligned):
     :return: PDB structure containing only fully aligned residues
     '''
 
-    proteins = {}
-
-    parser = PDBParser()
-    io = PDBIO()
-
-    for protein, file in zip(rec_list, input_files):  # Loop thru each protein and PDB file
-        structure = parser.get_structure(protein.id, file)  # Get the structure of each protein
-
-        if structure.get_id() != "2V5W:A":
-            continue
-
-        for model in structure:
-            for chain in model:
-                if chain.get_id() == "A":  # Only keeping 'A' chains
-                    print(fullyAligned[protein.id.replace(":", "_")])
-                    print("Protein      Chain       Res      Aligned")
-
-                    count = 0
-
-                    for residue in list(chain):
-                        # Remove all residues that aren't fully aligned
-                        num = residue.get_id()[1]
-
-                        if num not in fullyAligned[protein.id.replace(":", "_")]:
-                            chain.detach_child(residue.get_id())
-                        else:
-                            count += 1
-
-                        print(protein.id, "\t\t", chain.get_id(),  "\t\t", num, "\t\t", num in fullyAligned[protein.id.replace(":", "_")], "\t\t", count)
-                else:
-                    model.detach_child(chain.get_id())  # Remove all non-'A' chains
-
-        io.set_structure(structure)  # Make sure structure is OK
-        proteins[structure.get_id()] = structure
-
-        cleanStructures(proteins)
+    proteins = keepConsensusResidues(rec_list, input_files)
+    carbons = cleanStructures(proteins)
 
     return proteins
 
@@ -256,23 +232,12 @@ def writeDCDFile(rec_list, input_files, output_dir):
             traj = md.load_pdb(fp.name)                                 # Convert PDB to DCD file
             traj.save_dcd(output_dir + "/" + structure.get_id()[:4] + '.dcd', True)
 
-
 inputs_dir, output_dir, input_files = getInputs(sys)                    # Get the provided inputs
 tmpFASTAFP, rec_list = getSequences(input_files)                        # Get the sequences
 tmpPDBFP = runClustal(tmpFASTAFP)                                       # Run the multiple sequence alignment
-fullyAligned = getAlignedSequence(tmpPDBFP)                                   # Get the alignment offsets (for gaps)
+fullyAligned = getAlignedSequence(tmpPDBFP)                             # Get the alignment offsets (for gaps)
 proteins = getAlignedStructure(rec_list, input_files, fullyAligned)
 #writeDCDFile(rec_list, input_files, output_dir)                         # Write the aligned atoms to a .dcd file
-
-
-
-sup = Superimposer()
-# Specify the atom lists
-# 'fixed' and 'moving' are lists of Atom objects
-
-for i in range(1, len(keys) - 2):
-    sup.set_atoms(carbon_atoms[keys[0]], carbon_atoms[keys[i]])
-    sup.apply(carbon_atoms[keys[i]])
 
 
 
