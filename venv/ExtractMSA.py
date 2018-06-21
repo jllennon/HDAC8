@@ -12,13 +12,14 @@ from os.path import isfile, join
 import sys
 from Bio import SeqIO, AlignIO
 from Bio.Align.Applications import ClustalwCommandline
-from Bio.PDB import PDBParser, PDBIO, Superimposer
+from Bio.PDB import PDBParser, PDBIO
 from Bio.AlignIO import ClustalIO
 import mdtraj as md
 import tempfile
 import numpy as np
-import geomm
 import copy
+from geomm import centering, theobald_qcp
+#from geomm.superimpose import superimpose
 
 def getInputs(args):
     '''
@@ -229,42 +230,37 @@ def getCarbonArray(proteins):
     key_list = [key for key in carbon_found]
 
     for i in range(max_length):
-        found = True
-        
-        for key in carbon_found:
-            if not carbon_found[key][i]:
-                found = False
-        
-        if found:
+        # Only use carbon atoms if they are both in all proteins
+        if all(item[i] is True for item in carbon_found.values()):
             for key in key_list:
                 coords_list[key].append(carbon_coords[key][i][0])
                 coords_list[key].append(carbon_coords[key][i][1])
 
-    return proteins
+    return coords_list
 
-'''
-def equilizeProteins(carbon_atoms):
-    chain_pointers = []
-    residue_pointers = []
+def centerStructures(carbon_atoms):
+    translations = {key: [] for key in carbon_atoms}
+    centered_structures =  {}
 
-    for protein in carbon_atoms.values():
-        for chains in protein:
-            for chain in chains:
-                if chain.get_id() == "A":
-                    chain_ref = copy.copy(chain)
-                    chain_pointers.append(chain_ref)
+    for key, coords in carbon_atoms.items():
+        np_coords = np.asarray(coords, dtype=np.float64)
+        centered_structures[key] = centering.center(np_coords)
+        translations[key] = centered_structures[key][0] - np_coords[0]
 
-                    residues_ref = copy.copy(list(chain))
-                    residue_pointers.append(residues_ref)
+    return translations, centered_structures
 
-                        residue_flag = residue.get_id()[0]
+def rotateStructures(centered_structures):
+    protein_names = [key for key in centered_structures]
+    ref_name = protein_names[0]
+    rotation_matrices = {ref_name: np.ones((3,3))}
 
-                        if residue_flag != " ":     # Don't want to keep hetero residues or atoms:
-                            chain.detach_child(residue.get_id())
+    for i in range(1, len(protein_names)):
+        moving_name = protein_names[i]
+        #rotation_matrices[moving_name] = superimpose.superimpose(centered_structures[ref_name], centered_structures[moving_name], centered=True, rot_mat=True)[1]
 
+        rotation_matrices[moving_name] = theobald_qcp(centered_structures[ref_name], coords, rot_mat=True)[1]
 
-        proteins[protein.id] = protein
-'''
+    return rotation_maxtrices
 
 def getAlignedStructure(proteins):
     '''
@@ -275,7 +271,8 @@ def getAlignedStructure(proteins):
     '''
 
     carbon_atoms = getCarbonArray(proteins)
-    #carbon_atoms = equilizeProteins(carbon_atoms)
+    translations, centered_structures = centerStructures(carbon_atoms)
+    rotation_matrices = rotateStructures(centered_structures)
 
     return proteins
 
