@@ -202,18 +202,45 @@ def getAlignedSequence(tmpFASTAFP, proteins):
     return proteins
 
 
-def getCarbonAtoms(proteins):
-    carbon_atoms = copy.deepcopy(proteins)
+def getCarbonArray(proteins):
+    carbon_found = {}
+    carbon_coords = {}
 
-    for protein in carbon_atoms.values():
+    for protein in proteins.values():
         for chains in protein:
             for chain in chains:
-                for residue in list(chain):
-                    if not residue.has_id("CA") and not residue.has_id("CB"):
-                        chain.detach_child(residue.get_id())
+                if chain.get_id() == "A":
+                    carbon_found[protein.get_id()] = []
+                    carbon_coords[protein.get_id()] = []
 
+                    for residue in chain:
+                        if residue.has_id("CA") and residue.has_id("CB"):
+                            carbon_found[protein.get_id()].append(True)
+                            carbon_coords[protein.get_id()].append((residue["CA"].get_coord(), residue["CB"].get_coord()))
+                        else:
+                            carbon_found[protein.get_id()].append(False)
+                            carbon_coords[protein.get_id()].append((None))
 
-    return carbon_atoms
+    # Need to know the number of elements residue elements for indexing below
+    max_length = len(carbon_found[list(carbon_found.keys())[0]])
+
+    # Dictionary comprehension source: https://stackoverflow.com/questions/14507591/python-dictionary-comprehension
+    coords_list = {key: [] for key in carbon_found}
+    key_list = [key for key in carbon_found]
+
+    for i in range(max_length):
+        found = True
+        
+        for key in carbon_found:
+            if not carbon_found[key][i]:
+                found = False
+        
+        if found:
+            for key in key_list:
+                coords_list[key].append(carbon_coords[key][i][0])
+                coords_list[key].append(carbon_coords[key][i][1])
+
+    return proteins
 
 '''
 def equilizeProteins(carbon_atoms):
@@ -247,8 +274,8 @@ def getAlignedStructure(proteins):
     :return: PDB structure containing only fully aligned residues
     '''
 
-    carbon_atoms = getCarbonAtoms(proteins)
-    carbon_atoms = equilizeProteins(carbon_atoms)
+    carbon_atoms = getCarbonArray(proteins)
+    #carbon_atoms = equilizeProteins(carbon_atoms)
 
     return proteins
 
@@ -273,9 +300,9 @@ def writeDCDFile(rec_list, input_files, output_dir):
 
 inputs_dir, output_dir, input_files = getInputs(sys)                    # Get the provided inputs
 tmpFASTAFP, proteins = getSequences(input_files)                        # Get the sequences
-aligned_proteins = getAlignedSequence(proteins)
+aligned_proteins = getAlignedSequence(tmpFASTAFP, proteins)
+proteins = getAlignedStructure(aligned_proteins)
 
-#proteins = getAlignedStructure(rec_list, input_files, fullyAligned)
 #writeDCDFile(rec_list, input_files, output_dir)                         # Write the aligned atoms to a .dcd file
 
 
