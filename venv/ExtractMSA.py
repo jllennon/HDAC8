@@ -56,6 +56,13 @@ def getSequences(input_files):
 
     proteins = getStructures(rec_list, input_files)
 
+    '''
+    io = PDBIO()
+
+    for structure in proteins.values():
+        assert io.set_structure(structure)
+    '''
+
     return tmpFASTAFP, proteins
 
 def doMSA(tmpFASTAFP):
@@ -120,7 +127,7 @@ def getStructures(rec_list, input_files):
 
     for protein, file in zip(rec_list, input_files):        # Loop thru each protein and PDB file
         structure = parser.get_structure(protein.id, file)  # Get the structure of each protein
-        io.set_structure(structure)                         # Make sure structure is OK
+        #assert io.set_structure(structure)                         # Make sure structure is OK
         proteins[structure.get_id()] = structure
 
     return proteins
@@ -141,8 +148,6 @@ def keepConsensusResidues(proteins, aligned_indices):
     return proteins
 
 def removeNonHeteroAtoms(proteins):
-    io = PDBIO()
-
     for protein in proteins.values():
         for chains in protein:
             for chain in chains:
@@ -155,7 +160,11 @@ def removeNonHeteroAtoms(proteins):
                 else:
                     chains.detach_child(chain.get_id())  # Remove all non-'A' chains
 
-        #assert io.set_structure(protein)
+        '''
+        io = PDBIO()
+        assert io.set_structure(protein)
+        '''
+
         proteins[protein.id] = protein
 
     return proteins
@@ -197,6 +206,7 @@ def getAlignedSequence(tmpFASTAFP, proteins):
 
     alignment_indices = getConsensusSequences(msa_output, proteins)
     proteins = removeNonHeteroAtoms(proteins)
+
     alignment_indices = correctIndices(proteins, alignment_indices)
     proteins = keepConsensusResidues(proteins, alignment_indices)
 
@@ -249,18 +259,28 @@ def centerStructures(carbon_atoms):
 
     return translations, centered_structures
 
-def rotateStructures(centered_structures):
+def getRotationMatrix(centered_structures):
     protein_names = [key for key in centered_structures]
     ref_name = protein_names[0]
-    rotation_matrices = {ref_name: np.ones((3,3))}
+    rotation_matrices = {ref_name: np.identity(3)}
 
     for i in range(1, len(protein_names)):
         moving_name = protein_names[i]
-        #rotation_matrices[moving_name] = superimpose.superimpose(centered_structures[ref_name], centered_structures[moving_name], centered=True, rot_mat=True)[1]
+        rotation_matrices[moving_name] = theobald_qcp.theobald_qcp(centered_structures[ref_name], centered_structures[moving_name], rot_mat=True)[1]
+        #rotation_matrices[moving_name] = np.identity(3)
 
-        rotation_matrices[moving_name] = theobald_qcp(centered_structures[ref_name], coords, rot_mat=True)[1]
+    return rotation_matrices
 
-    return rotation_maxtrices
+def superimposeStructures(proteins, translations, rotation_matrices):
+    for protein_name, protein in proteins.items():
+        for chains in protein:
+            for chain in chains:
+                if chain.get_id() == "A":
+                    for residue in chain:
+                        for atom in residue:
+                            atom.transform(rotation_matrices[protein_name], translations[protein_name])
+
+    return proteins
 
 def getAlignedStructure(proteins):
     '''
@@ -272,7 +292,8 @@ def getAlignedStructure(proteins):
 
     carbon_atoms = getCarbonArray(proteins)
     translations, centered_structures = centerStructures(carbon_atoms)
-    rotation_matrices = rotateStructures(centered_structures)
+    rotation_matrices = getRotationMatrix(centered_structures)
+    proteins = superimposeStructures(proteins, translations, rotation_matrices)
 
     return proteins
 
@@ -295,10 +316,19 @@ def writeDCDFile(rec_list, input_files, output_dir):
             traj = md.load_pdb(fp.name)                                 # Convert PDB to DCD file
             traj.save_dcd(output_dir + "/" + structure.get_id()[:4] + '.dcd', True)
 
+def writeToPDB(proteins):
+    io = PDBIO()
+
+    for protein in proteins.values():
+        io.set_structure(protein)
+        io.save(output_dir + "/" + protein.get_id() + '_aligned' + '.pdb')
+
 inputs_dir, output_dir, input_files = getInputs(sys)                    # Get the provided inputs
 tmpFASTAFP, proteins = getSequences(input_files)                        # Get the sequences
+
 aligned_proteins = getAlignedSequence(tmpFASTAFP, proteins)
 proteins = getAlignedStructure(aligned_proteins)
+writeToPDB(proteins)
 
 #writeDCDFile(rec_list, input_files, output_dir)                         # Write the aligned atoms to a .dcd file
 
