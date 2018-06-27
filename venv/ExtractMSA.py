@@ -18,8 +18,7 @@ import mdtraj as md
 import tempfile
 import numpy as np
 import copy
-from geomm import centering, theobald_qcp
-#from geomm.superimpose import superimpose
+from geomm import theobald_qcp, centroid
 
 def getInputs(args):
     '''
@@ -55,13 +54,6 @@ def getSequences(input_files):
     tmpFASTAFP.flush()
 
     proteins = getStructures(rec_list, input_files)
-
-    '''
-    io = PDBIO()
-
-    for structure in proteins.values():
-        assert io.set_structure(structure)
-    '''
 
     return tmpFASTAFP, proteins
 
@@ -121,13 +113,10 @@ def getConsensusSequences(msa, proteins):
 
 def getStructures(rec_list, input_files):
     parser = PDBParser()
-    io = PDBIO()
-
     proteins = {}
 
     for protein, file in zip(rec_list, input_files):        # Loop thru each protein and PDB file
         structure = parser.get_structure(protein.id, file)  # Get the structure of each protein
-        #assert io.set_structure(structure)                         # Make sure structure is OK
         proteins[structure.get_id()] = structure
 
     return proteins
@@ -159,11 +148,6 @@ def removeNonHeteroAtoms(proteins):
                             chain.detach_child(residue.get_id())
                 else:
                     chains.detach_child(chain.get_id())  # Remove all non-'A' chains
-
-        '''
-        io = PDBIO()
-        assert io.set_structure(protein)
-        '''
 
         proteins[protein.id] = protein
 
@@ -212,7 +196,6 @@ def getAlignedSequence(tmpFASTAFP, proteins):
 
     return proteins
 
-
 def getCarbonArray(proteins):
     carbon_found = {}
     carbon_coords = {}
@@ -244,20 +227,20 @@ def getCarbonArray(proteins):
         if all(item[i] is True for item in carbon_found.values()):
             for key in key_list:
                 coords_list[key].append(carbon_coords[key][i][0])
-                coords_list[key].append(carbon_coords[key][i][1])
+                #coords_list[key].append(carbon_coords[key][i][1])
 
-    return coords_list
+    carbon_array = {key : np.asarray(value, dtype=np.float64) for key, value in coords_list.items()}
 
-def centerStructures(carbon_atoms):
+    return carbon_array
+
+def getTranslations(carbon_atoms):
     translations = {key: [] for key in carbon_atoms}
-    centered_structures =  {}
 
     for key, coords in carbon_atoms.items():
         np_coords = np.asarray(coords, dtype=np.float64)
-        centered_structures[key] = centering.center(np_coords)
-        translations[key] = centered_structures[key][0] - np_coords[0]
+        translations[key] = np_coords[0] - centroid.centroid(np_coords)[0]
 
-    return translations, centered_structures
+    return translations
 
 def getRotationMatrix(centered_structures):
     protein_names = [key for key in centered_structures]
@@ -266,8 +249,8 @@ def getRotationMatrix(centered_structures):
 
     for i in range(1, len(protein_names)):
         moving_name = protein_names[i]
-        rotation_matrices[moving_name] = theobald_qcp.theobald_qcp(centered_structures[ref_name], centered_structures[moving_name], rot_mat=True)[1]
-        #rotation_matrices[moving_name] = np.identity(3)
+        #rotation_matrices[moving_name] = theobald_qcp.theobald_qcp(centered_structures[ref_name], centered_structures[moving_name], rot_mat=True)[1]
+        rotation_matrices[moving_name] = np.identity(3)
 
     return rotation_matrices
 
@@ -290,9 +273,11 @@ def getAlignedStructure(proteins):
     :return: PDB structure containing only fully aligned residues
     '''
 
-    carbon_atoms = getCarbonArray(proteins)
-    translations, centered_structures = centerStructures(carbon_atoms)
-    rotation_matrices = getRotationMatrix(centered_structures)
+    carbon_array = getCarbonArray(proteins)
+
+    rotation_matrices = getRotationMatrix(carbon_array)
+    translations = getTranslations(carbon_array)
+
     proteins = superimposeStructures(proteins, translations, rotation_matrices)
 
     return proteins
