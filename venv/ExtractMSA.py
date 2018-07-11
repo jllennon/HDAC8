@@ -7,8 +7,7 @@
 #
 # To run: python3 <path/to/input/directory> <path/to/output/directory>
 
-from os import listdir
-from os.path import isfile, join
+from os import listdir, path
 import sys
 from Bio import SeqIO, AlignIO
 from Bio.Align.Applications import ClustalwCommandline
@@ -18,7 +17,7 @@ import mdtraj as md
 import tempfile
 import numpy as np
 import copy
-from geomm import theobald_qcp, centroid
+from geomm import theobald_qcp, centroid, superimpose, centering
 
 def getInputs(args):
     '''
@@ -30,7 +29,7 @@ def getInputs(args):
 
     # Get all PDB input files and put in a list
     input_files = [(inputs_dir + "/" + f) for f in listdir(inputs_dir) \
-                   if isfile(join(inputs_dir, f)) if not f.startswith(".") if f.endswith("pdb")]
+                   if path.isfile(path.join(inputs_dir, f)) if not f.startswith(".") if f.endswith("pdb")]
 
     return args.argv[1], args.argv[2], input_files
 
@@ -227,41 +226,74 @@ def getCarbonArray(proteins):
         if all(item[i] is True for item in carbon_found.values()):
             for key in key_list:
                 coords_list[key].append(carbon_coords[key][i][0])
-                #coords_list[key].append(carbon_coords[key][i][1])
+                coords_list[key].append(carbon_coords[key][i][1])
 
     carbon_array = {key : np.asarray(value, dtype=np.float64) for key, value in coords_list.items()}
 
     return carbon_array
 
 def getTranslations(carbon_atoms):
-    translations = {key: [] for key in carbon_atoms}
+    #translations = {key : centroid.centroid(values) for key, values in carbon_atoms.items()}
+    translations = {key: np.zeros(3) - centroid.centroid(values) for key, values in carbon_atoms.items()}
 
-    for key, coords in carbon_atoms.items():
-        np_coords = np.asarray(coords, dtype=np.float64)
-        translations[key] = np_coords[0] - centroid.centroid(np_coords)[0]
+    #translations = {key: np.zeros(3) for key in carbon_atoms}
+
+    '''
+    translations = {}
+
+    names = [key for key in carbon_atoms]
+    ref_name = names[0]
+
+    center = centering.center(carbon_atoms[ref_name])
+    ref_centroid = np.zeros(3) - centroid.centroid(carbon_atoms[ref_name])
+    translations[ref_name] = center
+
+    for i in range(1, len(names)):
+        moving_name = names[i]
+
+        #centered = centering.center(carbon_atoms[moving_name])
+        translations[moving_name] = ref_centroid - centroid.centroid(carbon_atoms[moving_name])
+        #print("Me translation:", moving_name, trans)
+    '''
 
     return translations
 
-def getRotationMatrix(centered_structures):
-    protein_names = [key for key in centered_structures]
-    ref_name = protein_names[0]
+
+def getRotationMatrix(carbon_array):
+    names = [key for key in carbon_array]
+
+    ref_name = names[0]
+    ref_centered = centering.center(carbon_array[ref_name])
+
     rotation_matrices = {ref_name: np.identity(3)}
 
-    for i in range(1, len(protein_names)):
-        moving_name = protein_names[i]
-        #rotation_matrices[moving_name] = theobald_qcp.theobald_qcp(centered_structures[ref_name], centered_structures[moving_name], rot_mat=True)[1]
-        rotation_matrices[moving_name] = np.identity(3)
+    for i in range(1, len(names)):
+        moving_name = names[i]
+
+        moving_centered = centering.center(carbon_array[moving_name])
+        rotation_matrices[moving_name] = theobald_qcp.theobald_qcp(ref_centered, moving_centered, rot_mat=True)[1]
+
+        #rotation_matrices[moving_name] = np.identity(3)
+
+        tmp = superimpose.superimpose(ref_centered, moving_centered, rot_mat=True)
+        print("Me:", rotation_matrices[moving_name], "\nGEOMM:", tmp[1])
 
     return rotation_matrices
 
 def superimposeStructures(proteins, translations, rotation_matrices):
     for protein_name, protein in proteins.items():
+        #print(protein_name, rotation_matrices[protein_name], translations[protein_name])
+
         for chains in protein:
             for chain in chains:
                 if chain.get_id() == "A":
                     for residue in chain:
                         for atom in residue:
-                            atom.transform(rotation_matrices[protein_name], translations[protein_name])
+                            #atom.transform(rotation_matrices[protein_name], translations[protein_name])
+
+                            atom.set_coord(np.dot(atom.get_coord() + translations[protein_name],
+                                                     rotation_matrices[protein_name]) + translations[protein_name])
+
 
     return proteins
 
@@ -275,8 +307,15 @@ def getAlignedStructure(proteins):
 
     carbon_array = getCarbonArray(proteins)
 
-    rotation_matrices = getRotationMatrix(carbon_array)
     translations = getTranslations(carbon_array)
+
+    rotation_matrices = getRotationMatrix(carbon_array)
+
+    '''
+    for name, carbons, rot, trans in zip(carbon_array.items(), rotation_matrices, translations):
+        test_proteins[name] = np.dot(carbons, rot) + trans
+        print("My Code: ", test_proteins[name])
+    '''
 
     proteins = superimposeStructures(proteins, translations, rotation_matrices)
 
@@ -306,7 +345,7 @@ def writeToPDB(proteins):
 
     for protein in proteins.values():
         io.set_structure(protein)
-        io.save(output_dir + "/" + protein.get_id() + '_aligned' + '.pdb')
+        io.save(output_dir + "/" + protein.get_id() + '_aligned.pdb')
 
 inputs_dir, output_dir, input_files = getInputs(sys)                    # Get the provided inputs
 tmpFASTAFP, proteins = getSequences(input_files)                        # Get the sequences
