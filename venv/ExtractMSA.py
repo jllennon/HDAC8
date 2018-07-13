@@ -195,6 +195,25 @@ def getAlignedSequence(tmpFASTAFP, proteins):
 
     return proteins
 
+def stripAtoms(proteins, missing_carbons):
+    for protein in proteins.values():
+        for chains in protein:
+            for chain in chains:
+                if chain.get_id() == "A":  # Only keeping 'A' chains
+                    i = 0
+
+                    for residue in list(chain):
+                        if i in missing_carbons:
+                            chain.detach_child(residue.get_id())
+                        else:
+                            for atom in residue:
+                                if atom.get_id() not in ("CA", "CB"):
+                                    residue.detach_child(atom.get_id())
+
+                        i += 1
+
+    return proteins
+
 def getCarbonArray(proteins):
     carbon_found = {}
     carbon_coords = {}
@@ -221,16 +240,23 @@ def getCarbonArray(proteins):
     coords_list = {key: [] for key in carbon_found}
     key_list = [key for key in carbon_found]
 
+    missing_carbons = []
+
     for i in range(max_length):
         # Only use carbon atoms if they are both in all proteins
         if all(item[i] is True for item in carbon_found.values()):
             for key in key_list:
                 coords_list[key].append(carbon_coords[key][i][0])
                 coords_list[key].append(carbon_coords[key][i][1])
+        else:
+            missing_carbons.append(i)
+            print("Warning: Carbon atoms coordinates are inconsistent at index ", i)
+
+    proteins = stripAtoms(proteins, missing_carbons)
 
     carbon_array = {key : np.asarray(value, dtype=np.float64) for key, value in coords_list.items()}
 
-    return carbon_array
+    return carbon_array, proteins
 
 def getTranslations(carbon_atoms):
     #translations = {key : centroid.centroid(values) for key, values in carbon_atoms.items()}
@@ -297,6 +323,35 @@ def superimposeStructures(proteins, translations, rotation_matrices):
 
     return proteins
 
+def sumperimposeProteins(proteins, carbon_array):
+    names = [key for key in carbon_array]
+
+    ref_name = names[0]
+    carbon_array[ref_name] = centering.center(carbon_array[ref_name])
+
+    for i in range(1, len(names)):
+        moving_name = names[i]
+        carbon_array[moving_name] = superimpose.superimpose(carbon_array[ref_name], carbon_array[moving_name])
+
+    for protein_name, protein in proteins.items():
+        for chains in protein:
+            for chain in chains:
+                if chain.get_id() == "A":
+                    i = 0
+
+                    for residue in chain:
+                        for atom in residue:
+                            if atom.get_id() == "CA":
+                                atom.set_coord(carbon_array[protein_name][i])
+                            elif atom.get_id() == "CB":
+                                atom.set_coord(carbon_array[protein_name][i + 1])   # CB's are always after the CA
+                            else:
+                                residue.detach_child(atom.get_id())
+
+                        i += 1
+
+    return proteins
+
 def getAlignedStructure(proteins):
     '''
     Create a dict containing only the residues that have full alignment
@@ -305,19 +360,15 @@ def getAlignedStructure(proteins):
     :return: PDB structure containing only fully aligned residues
     '''
 
-    carbon_array = getCarbonArray(proteins)
+    carbon_array, proteins = getCarbonArray(proteins)
 
+    '''
     translations = getTranslations(carbon_array)
-
     rotation_matrices = getRotationMatrix(carbon_array)
-
-    '''
-    for name, carbons, rot, trans in zip(carbon_array.items(), rotation_matrices, translations):
-        test_proteins[name] = np.dot(carbons, rot) + trans
-        print("My Code: ", test_proteins[name])
-    '''
-
     proteins = superimposeStructures(proteins, translations, rotation_matrices)
+    '''
+
+    sumperimposeProteins(proteins, carbon_array)
 
     return proteins
 
