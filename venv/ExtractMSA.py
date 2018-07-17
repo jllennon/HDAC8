@@ -13,11 +13,13 @@ from Bio import SeqIO, AlignIO
 from Bio.Align.Applications import ClustalwCommandline
 from Bio.PDB import PDBParser, PDBIO
 from Bio.AlignIO import ClustalIO
+from Bio.Cluster import pca
 import mdtraj as md
 import tempfile
 import numpy as np
 import copy
 from geomm import theobald_qcp, centroid, superimpose, centering
+from sklearn.decomposition import PCA
 
 def getInputs(args):
     '''
@@ -370,7 +372,7 @@ def getAlignedStructure(proteins):
 
     sumperimposeProteins(proteins, carbon_array)
 
-    return proteins
+    return carbon_array
 
 def writeDCDFile(rec_list, input_files, output_dir):
     '''
@@ -391,6 +393,15 @@ def writeDCDFile(rec_list, input_files, output_dir):
             traj = md.load_pdb(fp.name)                                 # Convert PDB to DCD file
             traj.save_dcd(output_dir + "/" + structure.get_id()[:4] + '.dcd', True)
 
+def getPCA(carbon_arrays):
+    pcas = {}
+
+    for key, coordinates in carbon_arrays.items():
+        pcas[key] = PCA()
+        pcas[key].fit(coordinates)
+
+    return pcas
+
 def writeToPDB(proteins):
     io = PDBIO()
 
@@ -401,8 +412,11 @@ def writeToPDB(proteins):
 inputs_dir, output_dir, input_files = getInputs(sys)                    # Get the provided inputs
 tmpFASTAFP, proteins = getSequences(input_files)                        # Get the sequences
 
-aligned_proteins = getAlignedSequence(tmpFASTAFP, proteins)
-proteins = getAlignedStructure(aligned_proteins)
+aligned_proteins = getAlignedSequence(tmpFASTAFP, proteins)             # Get the fully aligned residues
+carbon_array = getAlignedStructure(aligned_proteins)                    # Get the structurally aligned residues
+
+pcas = getPCA(carbon_array)
+
 writeToPDB(proteins)
 
 #writeDCDFile(rec_list, input_files, output_dir)                         # Write the aligned atoms to a .dcd file
