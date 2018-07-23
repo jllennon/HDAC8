@@ -20,6 +20,7 @@ import numpy as np
 import copy
 from geomm import theobald_qcp, centroid, superimpose, centering
 from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
 
 def getInputs(args):
     '''
@@ -260,72 +261,7 @@ def getCarbonArray(proteins):
 
     return carbon_array, proteins
 
-def getTranslations(carbon_atoms):
-    #translations = {key : centroid.centroid(values) for key, values in carbon_atoms.items()}
-    translations = {key: np.zeros(3) - centroid.centroid(values) for key, values in carbon_atoms.items()}
-
-    #translations = {key: np.zeros(3) for key in carbon_atoms}
-
-    '''
-    translations = {}
-
-    names = [key for key in carbon_atoms]
-    ref_name = names[0]
-
-    center = centering.center(carbon_atoms[ref_name])
-    ref_centroid = np.zeros(3) - centroid.centroid(carbon_atoms[ref_name])
-    translations[ref_name] = center
-
-    for i in range(1, len(names)):
-        moving_name = names[i]
-
-        #centered = centering.center(carbon_atoms[moving_name])
-        translations[moving_name] = ref_centroid - centroid.centroid(carbon_atoms[moving_name])
-        #print("Me translation:", moving_name, trans)
-    '''
-
-    return translations
-
-
-def getRotationMatrix(carbon_array):
-    names = [key for key in carbon_array]
-
-    ref_name = names[0]
-    ref_centered = centering.center(carbon_array[ref_name])
-
-    rotation_matrices = {ref_name: np.identity(3)}
-
-    for i in range(1, len(names)):
-        moving_name = names[i]
-
-        moving_centered = centering.center(carbon_array[moving_name])
-        rotation_matrices[moving_name] = theobald_qcp.theobald_qcp(ref_centered, moving_centered, rot_mat=True)[1]
-
-        #rotation_matrices[moving_name] = np.identity(3)
-
-        tmp = superimpose.superimpose(ref_centered, moving_centered, rot_mat=True)
-        print("Me:", rotation_matrices[moving_name], "\nGEOMM:", tmp[1])
-
-    return rotation_matrices
-
-def superimposeStructures(proteins, translations, rotation_matrices):
-    for protein_name, protein in proteins.items():
-        #print(protein_name, rotation_matrices[protein_name], translations[protein_name])
-
-        for chains in protein:
-            for chain in chains:
-                if chain.get_id() == "A":
-                    for residue in chain:
-                        for atom in residue:
-                            #atom.transform(rotation_matrices[protein_name], translations[protein_name])
-
-                            atom.set_coord(np.dot(atom.get_coord() + translations[protein_name],
-                                                     rotation_matrices[protein_name]) + translations[protein_name])
-
-
-    return proteins
-
-def sumperimposeProteins(proteins, carbon_array):
+def superimposeProteins(proteins, carbon_array):
     names = [key for key in carbon_array]
 
     ref_name = names[0]
@@ -370,7 +306,7 @@ def getAlignedStructure(proteins):
     proteins = superimposeStructures(proteins, translations, rotation_matrices)
     '''
 
-    sumperimposeProteins(proteins, carbon_array)
+    superimposeProteins(proteins, carbon_array)
 
     return carbon_array
 
@@ -393,12 +329,38 @@ def writeDCDFile(rec_list, input_files, output_dir):
             traj = md.load_pdb(fp.name)                                 # Convert PDB to DCD file
             traj.save_dcd(output_dir + "/" + structure.get_id()[:4] + '.dcd', True)
 
+def draw_vector(v0, v1, ax=None):
+    ax = ax or plt.gca()
+    arrowprops=dict(arrowstyle='->',
+                    linewidth=2,
+                    shrinkA=0, shrinkB=0)
+    ax.annotate('', v1, v0, arrowprops=arrowprops)
+
+
+
 def getPCA(carbon_arrays):
     pcas = {}
+    x = []
+    y = []
 
     for key, coordinates in carbon_arrays.items():
-        pcas[key] = PCA()
+        pcas[key] = PCA(n_components=2)
         pcas[key].fit(coordinates)
+
+        x.append(pcas[key].components_[0][0])
+        y.append(pcas[key].components_[0][1])
+
+        #plt.scatter(coordinates[:, 0], coordinates[:, 1], alpha=0.2)
+
+        '''
+        for length, vector in zip(pcas[key].explained_variance_, pcas[key].components_):
+            v = vector * 3 * np.sqrt(length)
+            draw_vector(pcas[key].mean_, pcas[key].mean_ + v)
+        plt.axis('equal');
+        '''
+
+    plt.scatter(x, y, alpha=0.2)
+    plt.show()
 
     return pcas
 
