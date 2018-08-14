@@ -7,7 +7,7 @@
 #
 # To run: python3 <path/to/input/directory> <path/to/output/directory>
 
-from os import listdir, path
+from os import listdir, path, devnull
 import sys
 from Bio import SeqIO, AlignIO
 from Bio.Align.Applications import ClustalwCommandline
@@ -22,6 +22,19 @@ from geomm import theobald_qcp, centroid, superimpose, centering
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 
+class HiddenPrints:
+    '''
+    Found at https://stackoverflow.com/questions/8391411/suppress-calls-to-print-python
+    '''
+
+    def __enter__(self):
+        self._original_stdout = sys.stdout
+        sys.stdout = open(devnull, 'w')
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stdout.close()
+        sys.stdout = self._original_stdout
+
 def getInputs(args):
     '''
     Get all the PDB files in the directory
@@ -32,7 +45,7 @@ def getInputs(args):
 
     # Get all PDB input files and put in a list
     input_files = [(inputs_dir + "/" + f) for f in listdir(inputs_dir) \
-                   if path.isfile(path.join(inputs_dir, f)) if not f.startswith(".") if f.endswith("pdb")]
+                   if path.isfile(path.join(inputs_dir, f)) if not f.startswith(".") if f.endswith("pdb") or f.endswith(".ent")]
 
     return args.argv[1], args.argv[2], input_files
 
@@ -47,11 +60,12 @@ def getSequences(input_files):
     tmpFASTAFP = tempfile.NamedTemporaryFile(mode='w+')
 
     for seq in input_files:                                 # Open each PDB file
-        for record in SeqIO.parse(seq, "pdb-seqres"):       # Get each chain
-            if record.annotations["chain"] == "A":          # Only write the "A" Chain
-                tmpFASTAFP.write(record.format("fasta"))    # Write as a FASTA file
-                rec_list.append(record)
-                break
+        with HiddenPrints():
+            for record in SeqIO.parse(seq, "pdb-seqres"):       # Get each chain
+                if record.annotations["chain"] == "A":          # Only write the "A" Chain
+                    tmpFASTAFP.write(record.format("fasta"))    # Write as a FASTA file
+                    rec_list.append(record)
+                    break
 
     tmpFASTAFP.flush()
 
@@ -299,13 +313,6 @@ def getAlignedStructure(proteins):
     '''
 
     carbon_array, proteins = getCarbonArray(proteins)
-
-    '''
-    translations = getTranslations(carbon_array)
-    rotation_matrices = getRotationMatrix(carbon_array)
-    proteins = superimposeStructures(proteins, translations, rotation_matrices)
-    '''
-
     superimposeProteins(proteins, carbon_array)
 
     return carbon_array
@@ -329,38 +336,82 @@ def writeDCDFile(rec_list, input_files, output_dir):
             traj = md.load_pdb(fp.name)                                 # Convert PDB to DCD file
             traj.save_dcd(output_dir + "/" + structure.get_id()[:4] + '.dcd', True)
 
-def draw_vector(v0, v1, ax=None):
-    ax = ax or plt.gca()
-    arrowprops=dict(arrowstyle='->',
-                    linewidth=2,
-                    shrinkA=0, shrinkB=0)
-    ax.annotate('', v1, v0, arrowprops=arrowprops)
-
-
-
 def getPCA(carbon_arrays):
+
+    '''
+    # Attempt 1:
     pcas = {}
+    projected_pcas = {}
+
     x = []
     y = []
+
+    values = []
+
+    for key, coordinates in carbon_arrays.items():
+        values.append([])
+
+        for entry in coordinates:
+            values[-1].append(entry)
 
     for key, coordinates in carbon_arrays.items():
         pcas[key] = PCA(n_components=2)
         pcas[key].fit(coordinates)
 
-        x.append(pcas[key].components_[0][0])
-        y.append(pcas[key].components_[0][1])
+        projected_pcas[key] = (np.dot(coordinates, pcas[key].components_[0]), np.dot(coordinates, pcas[key].components_[1]))
 
-        #plt.scatter(coordinates[:, 0], coordinates[:, 1], alpha=0.2)
+        x.append(projected_pcas[key][0])
+        y.append(projected_pcas[key][1])
 
-        '''
-        for length, vector in zip(pcas[key].explained_variance_, pcas[key].components_):
-            v = vector * 3 * np.sqrt(length)
-            draw_vector(pcas[key].mean_, pcas[key].mean_ + v)
-        plt.axis('equal');
-        '''
+        #plt.scatter(projected_pcas[key][0], projected_pcas[key][1], alpha=0.2)
 
     plt.scatter(x, y, alpha=0.2)
-    plt.show()
+    '''
+
+    # Attempt 2:
+    positions_len = len(list(carbon_arrays.values())[0])
+    structures_len = len(carbon_arrays.keys())
+
+    positions = np.zeros(shape=(positions_len, structures_len), dtype=(float,3))
+
+    pcas = []
+    names = [key for key in carbon_arrays]
+
+    for i in range(structures_len):
+        for j in range(positions_len):
+            positions[j][i] = carbon_arrays[names[i]][j]
+
+    print(positions)
+
+    tmp_pca = PCA(n_components=2)
+
+    pcas1 = []
+    pcas2 = []
+
+    for pos in positions:
+        tmp_pca.fit(pos)
+        pcas.append((tmp_pca.components_[0], tmp_pca.components_[1]))
+
+        pcas1.append((tmp_pca.components_[0][0], tmp_pca.components_[0][1], tmp_pca.components_[0][2]))
+        pcas2.append(tmp_pca.components_[1])
+
+    print(pcas)
+    pca_dots = []
+
+    for name in names:
+        pca1 = pcas[0]
+        pca2 = pcas[:][1]
+
+        tmp_c_array = np.transpose(carbon_arrays[name])
+
+        tmp1 = np.dot(pcas1, tmp_c_array)
+        tmp2 = np.dot(pcas2, carbon_arrays[name])
+
+        pca_dots = (np.dot(pcas[:][0], carbon_arrays[name]), np.dot(pcas[:][1], carbon_arrays[name]))
+
+    #plt.show()
+
+
 
     return pcas
 
