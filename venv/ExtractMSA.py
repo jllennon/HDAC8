@@ -7,20 +7,22 @@
 #
 # To run: python3 <path/to/input/directory> <path/to/output/directory>
 
-from os import listdir, path, devnull
+import tempfile
 import sys
+import copy
+from os import listdir, path, devnull
+
+import numpy as np
+import mdtraj as md
+import matplotlib.pyplot as plt
 from Bio import SeqIO, AlignIO
 from Bio.Align.Applications import ClustalwCommandline
 from Bio.PDB import PDBParser, PDBIO
 from Bio.AlignIO import ClustalIO
 from Bio.Cluster import pca
-import mdtraj as md
-import tempfile
-import numpy as np
-import copy
 from geomm import theobald_qcp, centroid, superimpose, centering
 from sklearn.decomposition import PCA
-import matplotlib.pyplot as plt
+
 
 class HiddenPrints:
     '''
@@ -35,6 +37,46 @@ class HiddenPrints:
         sys.stdout.close()
         sys.stdout = self._original_stdout
 
+
+class Protein:
+    def __init__(self, name, chain, bio_struct=None, carbons=None, pdb_file=None):
+        self._name = name
+        self._chain = chain
+        self._bio_struct = bio_struct
+        self._pdb_file = pdb_file
+        self._carbons = carbons
+
+    def get_name(self):
+        return self._name
+
+    def get_chain(self):
+        return self._chain
+
+    def get_bio_struct(self):
+        return self._bio_struct
+
+    def get_pdb_file(self):
+        return self._pdb_file
+
+    def get_carbons(self):
+        return self._carbons
+
+    def set_name(self, name):
+        self._name = name
+
+    def set_chain(self, chain):
+        self._chain = chain
+
+    def set_bio_struct(self, bio_struct):
+        self._bio_struct = bio_struct
+
+    def set_pdb_file(self, pdb_file):
+        self._pdb_file = pdb_file
+
+    def set_carbons(self, carbons):
+        self._carbons = carbons
+
+
 def getInputs(args):
     '''
     Get all the PDB files in the directory
@@ -47,9 +89,24 @@ def getInputs(args):
     input_files = [(inputs_dir + "/" + f) for f in listdir(inputs_dir) \
                    if path.isfile(path.join(inputs_dir, f)) if not f.startswith(".") if f.endswith("pdb") or f.endswith(".ent")]
 
-    return args.argv[1], args.argv[2], input_files
+    with open(inputs_dir + '/structures_list.txt', 'r') as f:
+        read_data = f.read().splitlines()
 
-def getSequences(input_files):
+    structure_dict = {}
+
+    NAME = 0 # Constant name of the protein
+    CHAIN = 1 # Constant name of the chain to use e.g. "A", "B", etc...
+
+    for i in range(2, len(read_data)): # First two lines are column headers
+        split_row = read_data[i].split()
+
+        protein_name = split_row[NAME].upper()
+        #tmp = split_row[CHAIN]
+        structure_dict[protein_name] = Protein(protein_name, split_row[CHAIN])
+
+    return args.argv[1], args.argv[2], input_files, structure_dict
+
+def getSequences(input_files, structure_dict):
     '''
     Extract the residues from the PDB files
     :param input_files: list of all PDB files
@@ -62,16 +119,19 @@ def getSequences(input_files):
     for seq in input_files:                                 # Open each PDB file
         with HiddenPrints():
             for record in SeqIO.parse(seq, "pdb-seqres"):       # Get each chain
-                if record.annotations["chain"] == "A":          # Only write the "A" Chain
+                # First four letters are the structure (names are in the format [NAME:C], with "C" being the chain ID)
+                structure_name = record.name[:4]
+
+                if record.annotations["chain"] == structure_dict[structure_name].get_chain():
                     tmpFASTAFP.write(record.format("fasta"))    # Write as a FASTA file
                     rec_list.append(record)
                     break
 
     tmpFASTAFP.flush()
 
-    proteins = getStructures(rec_list, input_files)
+    getStructures(rec_list, input_files, structure_dict)
 
-    return tmpFASTAFP, proteins
+    return tmpFASTAFP
 
 def doMSA(tmpFASTAFP):
     '''
@@ -127,30 +187,29 @@ def getConsensusSequences(msa, proteins):
 
     return alignment_indices
 
-def getStructures(rec_list, input_files):
+def getStructures(rec_list, input_files, structure_dict):
     parser = PDBParser()
-    proteins = {}
 
     for protein, file in zip(rec_list, input_files):        # Loop thru each protein and PDB file
         structure = parser.get_structure(protein.id, file)  # Get the structure of each protein
-        proteins[structure.get_id()] = structure
 
-    return proteins
+        structure_name = structure.get_id()[:4].upper()
+        structure_dict[structure_name].set_bio_struct(structure)
 
-def keepConsensusResidues(proteins, aligned_indices):
-    for protein in proteins.values():
-        for chains in protein:
+def keepConsensusResidues(structure_dict, aligned_indices):
+    for structure in structure_dict.values():
+        for chains in structure.get_bio_struct():
             for chain in chains:
                 for residue in list(chain):
                     # Remove all residues that aren't fully aligned
                     residue_id = residue.get_id()[1]
 
-                    if residue_id not in aligned_indices[protein.id.replace(":", "_")]:     # Don't want to keep hetero residues or atoms:
+                    if residue_id not in aligned_indices[structure.get_bio_struct().id.replace(":", "_")]:     # Don't want to keep hetero residues or atoms:
                         chain.detach_child(residue.get_id())
 
-        proteins[protein.get_id()] = protein
+        #proteins[protein.get_id()] = protein
 
-    return proteins
+    #return proteins
 
 def removeNonHeteroAtoms(proteins):
     for protein in proteins.values():
@@ -169,7 +228,7 @@ def removeNonHeteroAtoms(proteins):
 
     return proteins
 
-def correctIndices(proteins, alignment_indices):
+def correctIndices(structure_dict, alignment_indices):
     # Remove any alignment indices that we don't have residue data for
     # Note: the ClustalW alignment uses the known residues, but we don't necessarily have the coordinates
     #       of all of the atoms comprising each residue. As a result, we remove all of the indices of the atoms
@@ -178,10 +237,10 @@ def correctIndices(proteins, alignment_indices):
     starting_indices = []
     ending_indices = []
 
-    for protein in proteins.values():
-        for chains in protein:
+    for structure in structure_dict.values():
+        for chains in structure.get_bio_struct():
             for chain in chains:
-                if chain.get_id() == "A":  # Only keeping 'A' chains
+                if chain.get_id() == structure.get_chain():
                     starting_indices.append(list(chain)[0].get_id()[1])  # Get the first residue ID
                     ending_indices.append(list(chain)[-1].get_id()[1])  # Get the last residue ID
 
@@ -195,7 +254,7 @@ def correctIndices(proteins, alignment_indices):
 
     return alignment_indices
 
-def getAlignedSequence(tmpFASTAFP, proteins):
+def getAlignedSequence(tmpFASTAFP, structure_dict):
     '''
     Use the Clustal alignment file to get slices of alignment
     :param tmpPDBFP: file pointer to Clustal alignment output
@@ -204,17 +263,17 @@ def getAlignedSequence(tmpFASTAFP, proteins):
 
     msa_output = doMSA(tmpFASTAFP)
 
-    alignment_indices = getConsensusSequences(msa_output, proteins)
-    proteins = removeNonHeteroAtoms(proteins)
+    alignment_indices = getConsensusSequences(msa_output, structure_dict)
+    #removeNonHeteroAtoms(proteins)
 
-    alignment_indices = correctIndices(proteins, alignment_indices)
-    proteins = keepConsensusResidues(proteins, alignment_indices)
+    alignment_indices = correctIndices(structure_dict, alignment_indices)
+    keepConsensusResidues(structure_dict, alignment_indices)
 
-    return proteins
+    #return proteins
 
-def stripAtoms(proteins, missing_carbons):
-    for protein in proteins.values():
-        for chains in protein:
+def stripAtoms(structure_dict, missing_carbons):
+    for structure in structure_dict.values():
+        for chains in structure.get_bio_struct():
             for chain in chains:
                 if chain.get_id() == "A":  # Only keeping 'A' chains
                     i = 0
@@ -229,26 +288,24 @@ def stripAtoms(proteins, missing_carbons):
 
                         i += 1
 
-    return proteins
-
-def getCarbonArray(proteins):
+def getCarbonArray(structure_dict):
     carbon_found = {}
     carbon_coords = {}
 
-    for protein in proteins.values():
-        for chains in protein:
+    for structure in structure_dict.values():
+        for chains in structure.get_bio_struct():
             for chain in chains:
-                if chain.get_id() == "A":
-                    carbon_found[protein.get_id()] = []
-                    carbon_coords[protein.get_id()] = []
+                if chain.get_id() == structure.get_chain():
+                    carbon_found[structure.get_name()] = []
+                    carbon_coords[structure.get_name()] = []
 
                     for residue in chain:
                         if residue.has_id("CA") and residue.has_id("CB"):
-                            carbon_found[protein.get_id()].append(True)
-                            carbon_coords[protein.get_id()].append((residue["CA"].get_coord(), residue["CB"].get_coord()))
+                            carbon_found[structure.get_name()].append(True)
+                            carbon_coords[structure.get_name()].append((residue["CA"].get_coord(), residue["CB"].get_coord()))
                         else:
-                            carbon_found[protein.get_id()].append(False)
-                            carbon_coords[protein.get_id()].append((None))
+                            carbon_found[structure.get_name()].append(False)
+                            carbon_coords[structure.get_name()].append((None))
 
     # Need to know the number of elements residue elements for indexing below
     max_length = len(carbon_found[list(carbon_found.keys())[0]])
@@ -269,32 +326,39 @@ def getCarbonArray(proteins):
             missing_carbons.append(i)
             print("Warning: Carbon atoms coordinates are inconsistent at index ", i)
 
-    proteins = stripAtoms(proteins, missing_carbons)
+    stripAtoms(structure_dict, missing_carbons)
 
-    carbon_array = {key : np.asarray(value, dtype=np.float64) for key, value in coords_list.items()}
+    for structure in structure_dict.values():
+        structure.set_carbons(coords_list[structure.get_name()])
 
-    return carbon_array, proteins
+    #carbon_array = {key : np.asarray(value, dtype=np.float64) for key, value in coords_list.items()}
 
-def superimposeProteins(proteins, carbon_array):
-    names = [key for key in carbon_array]
+    #return carbon_array, proteins
+
+def superimposeProteins(structure_dict):
+    names = [key for key in structure_dict.keys()]
 
     ref_name = names[0]
-    carbon_array[ref_name] = centering.center(carbon_array[ref_name])
+    structure_dict[ref_name].set_carbons(centering.center(structure_dict[ref_name].get_carbons()))
 
     for i in range(1, len(names)):
         moving_name = names[i]
-        carbon_array[moving_name] = superimpose.superimpose(carbon_array[ref_name], carbon_array[moving_name])
+        #carbon_array[moving_name] = superimpose.superimpose(carbon_array[ref_name], carbon_array[moving_name])
+        structure_dict[moving_name].set_carbons(centering.center(structure_dict[moving_name].get_carbons()))
 
-    for protein_name, protein in proteins.items():
-        for chains in protein:
+    # TODO update coordinates of all atoms after superimposing (not just carbon alpha and carbon beta atoms)
+
+    '''
+    for structure_name, structure in structure_dict.items():
+        for chains in structure.get_bio_struct():
             for chain in chains:
-                if chain.get_id() == "A":
+                if chain.get_id() == structure.get_chain():
                     i = 0
 
                     for residue in chain:
                         for atom in residue:
                             if atom.get_id() == "CA":
-                                atom.set_coord(carbon_array[protein_name][i])
+                                atom.set_coord(structure[i])
                             elif atom.get_id() == "CB":
                                 atom.set_coord(carbon_array[protein_name][i + 1])   # CB's are always after the CA
                             else:
@@ -303,8 +367,9 @@ def superimposeProteins(proteins, carbon_array):
                         i += 1
 
     return proteins
+    '''
 
-def getAlignedStructure(proteins):
+def getAlignedStructure(structure_dict):
     '''
     Create a dict containing only the residues that have full alignment
     :param rec_list: list of protein records
@@ -312,10 +377,8 @@ def getAlignedStructure(proteins):
     :return: PDB structure containing only fully aligned residues
     '''
 
-    carbon_array, proteins = getCarbonArray(proteins)
-    superimposeProteins(proteins, carbon_array)
-
-    return carbon_array
+    getCarbonArray(structure_dict)
+    superimposeProteins(structure_dict)
 
 def writeDCDFile(rec_list, input_files, output_dir):
     '''
@@ -422,13 +485,13 @@ def writeToPDB(proteins):
         io.set_structure(protein)
         io.save(output_dir + "/" + protein.get_id() + '_aligned.pdb')
 
-inputs_dir, output_dir, input_files = getInputs(sys)                    # Get the provided inputs
-tmpFASTAFP, proteins = getSequences(input_files)                        # Get the sequences
+inputs_dir, output_dir, input_files, structure_dict = getInputs(sys)                    # Get the provided inputs
+tmpFASTAFP = getSequences(input_files, structure_dict)                        # Get the sequences
 
-aligned_proteins = getAlignedSequence(tmpFASTAFP, proteins)             # Get the fully aligned residues
-carbon_array = getAlignedStructure(aligned_proteins)                    # Get the structurally aligned residues
+getAlignedSequence(tmpFASTAFP, structure_dict)             # Get the fully aligned residues
+getAlignedStructure(structure_dict)                    # Get the structurally aligned residues
 
-pcas = getPCA(carbon_array)
+pcas = getPCA(structure_dict)
 
 writeToPDB(proteins)
 
