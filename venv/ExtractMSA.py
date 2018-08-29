@@ -399,7 +399,7 @@ def writeDCDFile(rec_list, input_files, output_dir):
             traj = md.load_pdb(fp.name)                                 # Convert PDB to DCD file
             traj.save_dcd(output_dir + "/" + structure.get_id()[:4] + '.dcd', True)
 
-def getPCA(carbon_arrays):
+def getPCA(structure_dict):
 
     '''
     # Attempt 1:
@@ -431,11 +431,12 @@ def getPCA(carbon_arrays):
     plt.scatter(x, y, alpha=0.2)
     '''
 
+    '''
     # Attempt 2:
     positions_len = len(list(carbon_arrays.values())[0])
     structures_len = len(carbon_arrays.keys())
 
-    positions = np.zeros(shape=(positions_len, structures_len), dtype=(float,3))
+    positions = np.zeros(shape=(positions_len, structures_len), dtype=(float, 3))
 
     pcas = []
     names = [key for key in carbon_arrays]
@@ -471,10 +472,30 @@ def getPCA(carbon_arrays):
         tmp2 = np.dot(pcas2, carbon_arrays[name])
 
         pca_dots = (np.dot(pcas[:][0], carbon_arrays[name]), np.dot(pcas[:][1], carbon_arrays[name]))
+    '''
+
+    # Attempt 3
+    # Reorganize carbon coords. into lists for each respective atom
+
+    # Get lengths necessary for looping and initializing the 2D array
+    structure_len = len(structure_dict) # count of all proteins
+    structure_names = [item for item in structure_dict.keys()]
+
+    tmp = structure_dict[structure_names[0]]
+
+    atom_len = len(structure_dict[structure_names[0]].get_carbons()) # count of all atoms in a given protein (all should have the same number of atoms)
+
+    coords = np.zeros(shape=(atom_len, structure_len), dtype=(float, 3))
+
+    print(coords)
+
+    for name, i in zip(structure_names, range(structure_len)):
+        for j in range(atom_len):
+            coords[j][i] = structure_dict[name].get_carbons()[j]
+
+    print(coords)
 
     #plt.show()
-
-
 
     return pcas
 
