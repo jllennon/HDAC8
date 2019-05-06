@@ -321,6 +321,8 @@ def get_carbon_array(structure_dict):
                             carbon_found[structure.get_name()].append(False)
                             carbon_coords[structure.get_name()].append((None))
 
+        #print("Coords: ", structure.get_name(), carbon_coords[structure.get_name()])
+
     # Need to know the number of elements residue elements for indexing below
     max_length = len(carbon_found[list(carbon_found.keys())[0]])
 
@@ -358,7 +360,7 @@ def get_carbon_array(structure_dict):
                 coords_list[key].append(carbon_coords[key][i][1])
         else:
             missing_carbons.append(i)
-            print("Warning: Carbon atoms coordinates are inconsistent at index ", i)
+            print("Warning: Carbon atoms coordinates are missing for at least one structure at index ", i)
 
     strip_atoms(structure_dict, missing_carbons)
 
@@ -453,22 +455,27 @@ def get_atomic_coords(structure_dict):
     return coords
 
 
-def get_projection(structure_dict, pcas1, pcas2, projected_pcas1, projected_pcas2):
+def scaler_dot_product(a, b):
+    sum = 0
+
+    for a_value, b_value in zip(a, b):
+        sum += (a_value[0] * b_value[0] + a_value[1] * b_value[1] + a_value[2] * b_value[2])
+
+    return sum
+
+
+def get_projection(structure_dict, pcas1, pcas2):
+    projected_pcas1 = []
+    projected_pcas2 = []
+
     for structure in structure_dict.values():
-        sum = 0
-        for pca1_value, structure_value in zip(pcas1, structure.get_carbons()):
-            sum += (pca1_value[0] * structure_value[0] + pca1_value[1] * structure_value[1] + pca1_value[2] * structure_value[2])
-
-        structure.set_pca1(sum)
-
-        sum = 0
-        for pca2_value, structure_value in zip(pcas2, structure.get_carbons()):
-            sum += (pca2_value[0] * structure_value[0] + pca2_value[2] * structure_value[2] + pca2_value[2] * structure_value[2])
-
-        structure.set_pca2(sum)
+        structure.set_pca1(scaler_dot_product(pcas1, structure.get_carbons()))
+        structure.set_pca2(scaler_dot_product(pcas2, structure.get_carbons()))
 
         projected_pcas1.append(structure.get_pca1())
         projected_pcas2.append(structure.get_pca2())
+
+    return projected_pcas1, projected_pcas2
 
 def get_pca(structure_dict):
     coords = get_atomic_coords(structure_dict)
@@ -482,21 +489,24 @@ def get_pca(structure_dict):
         pcas1.append(pca.components_[0])
         pcas2.append(pca.components_[1])
 
-    print(pcas1)
-    print(pcas2)
+    #print(pcas1, "\n", pcas2)
 
-    projected_pcas1 = []
-    projected_pcas2 = []
+    projected_pcas1, projected_pcas2 = get_projection(structure_dict, pcas1, pcas2)
 
-    get_projection(structure_dict, pcas1, pcas2, projected_pcas1, projected_pcas2)
+    print_pcas(projected_pcas1, projected_pcas2)
 
-    plt.scatter(projected_pcas1, projected_pcas2, alpha=0.2)
+    return projected_pcas1, projected_pcas2
+
+#def add_test_chain(structure_dict):
+    #for structure in structure_dict:
+
+
+def print_pcas(pca1, pca2):
+    plt.scatter(pca1, pca2, alpha=0.2)
     plt.xlabel("Projected PC 1")
     plt.ylabel("Projected PC 2")
 
     plt.show()
-
-    return (projected_pcas1, projected_pcas2)
 
 def write_to_pdb(structure_dict):
     io = PDBIO()
@@ -505,17 +515,17 @@ def write_to_pdb(structure_dict):
         io.set_structure(structure.get_bio_struct())
         io.save(output_dir + "/" + structure.get_name() + '_shifted.pdb')
 
-inputs_dir, output_dir, input_files, structure_dict = get_inputs(sys)                    # Get the provided inputs
-tmpFASTAFP = get_sequences(input_files, structure_dict)                        # Get the sequences
+inputs_dir, output_dir, input_files, structure_dict = get_inputs(sys)       # Get the provided inputs
+tmpFASTAFP = get_sequences(input_files, structure_dict)                     # Get the sequences
 
-get_aligned_sequence(tmpFASTAFP, structure_dict)             # Get the fully aligned residues
-get_aligned_structure(structure_dict)                    # Get the structurally aligned residues
+get_aligned_sequence(tmpFASTAFP, structure_dict)                            # Get the fully aligned residues
+get_aligned_structure(structure_dict)                                       # Get the structurally aligned residues
 
 pcas = get_pca(structure_dict)
 
 write_to_pdb(structure_dict)
 
-#write_dcd_file(rec_list, input_files, output_dir)                         # Write the aligned atoms to a .dcd file
+#write_dcd_file(rec_list, input_files, output_dir)                          # Write the aligned atoms to a .dcd file
 
 
 
