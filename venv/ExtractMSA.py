@@ -13,7 +13,7 @@ import copy
 from os import listdir, path, devnull
 
 import numpy as np
-import mdtraj as md
+#import mdtraj as md
 import matplotlib.pyplot as plt
 from Bio import SeqIO, AlignIO
 from Bio.Align.Applications import ClustalwCommandline
@@ -111,7 +111,7 @@ def get_inputs(args):
     NAME = 0 # Constant name of the protein
     CHAIN = 1 # Constant name of the chain to use e.g. "A", "B", etc...
 
-    for i in range(2, len(read_data)): # First two lines are column headers
+    for i in range(1, len(read_data)): # First two lines are column headers
         split_row = read_data[i].split()
 
         protein_name = split_row[NAME].upper()
@@ -136,6 +136,9 @@ def get_sequences(input_files, structure_dict):
             # First four letters are the structure (names are in the format [NAME:C], with "C" being the chain ID)
             structure_name = record.name[:4]
 
+            if structure_name == "<unk":
+                continue
+
             if record.annotations["chain"] == structure_dict[structure_name].get_chain():
                 tmpFASTAFP.write(record.format("fasta"))    # Write as a FASTA file
                 rec_list.append(record)
@@ -154,7 +157,7 @@ def do_msa(tmpFASTAFP):
     :return: file pointer to the temporary alignment file
     '''
 
-    clustalw_exe = "/Users/work/DicksonLab/Code/Clustalw/clustalw2"     # Path to ClustalW installation
+    clustalw_exe = "/Users/jim/DicksonLab/Code/Clustalw/clustalw2"     # Path to ClustalW installation
     tmpPDBFP = tempfile.NamedTemporaryFile(mode='w+')
 
     clustalw_cline = ClustalwCommandline(clustalw_exe, infile=tmpFASTAFP.name, outfile=tmpPDBFP.name)
@@ -369,15 +372,22 @@ def get_carbon_array(structure_dict):
 
 
 def superimpose_proteins(structure_dict):
-    names = [key for key in structure_dict.keys()]
+    names = tuple(key for key in structure_dict.keys())
 
     ref_name = names[0]
-    structure_dict[ref_name].set_carbons(centering.center(structure_dict[ref_name].get_carbons()))
+
+    # Move reference structure to the origin
+    centered_centroid = centroid.centroid(structure_dict[ref_name].get_carbons())
+    centered_ref_coords = [atomic_coords - centered_centroid for atomic_coords in structure_dict[ref_name].get_carbons()]
+    structure_dict[ref_name].set_carbons(centered_ref_coords)
 
     for i in range(1, len(names)):
-        moving_name = names[i]
-        #carbon_array[moving_name] = superimpose.superimpose(carbon_array[ref_name], carbon_array[moving_name])
-        structure_dict[moving_name].set_carbons(centering.center(structure_dict[moving_name].get_carbons()))
+        moving_carbons = structure_dict[names[i]].get_carbons()
+
+        # Superimpose the structure onto the reference structure and keep only the updated coordinates
+        # (do not need rotation matrix or RMSD)
+        centered_structure = superimpose.superimpose(np.asarray(centered_ref_coords), np.asarray(moving_carbons))[0]
+        structure_dict[names[i]].set_carbons(centered_structure.tolist())
 
     # TODO update coordinates of all atoms after superimposing (not just carbon alpha and carbon beta atoms)
 
@@ -413,24 +423,24 @@ def get_aligned_structure(structure_dict):
     get_carbon_array(structure_dict)
     superimpose_proteins(structure_dict)
 
-def write_dcd_file(rec_list, input_files, output_dir):
-    '''
-    Write a DCD file containing the locations of the atoms whose residues have full alignment
-    :param rec_list: list of protein records
-    :param input_files: list of all input PDB files
-    :param output_dir: output directory for .dcd files
-    '''
-
-    parser = PDBParser()
-    io = PDBIO()
-
-    for protein, file in zip(rec_list, input_files):                    # Loop thru each protein and PDB file
-        structure = parser.get_structure(protein.id, file)              # Get the structure of each protein
-
-        with tempfile.NamedTemporaryFile(mode='w+') as fp:              # Using temp file to store partial PDB
-            io.save(fp.name)
-            traj = md.load_pdb(fp.name)                                 # Convert PDB to DCD file
-            traj.save_dcd(output_dir + "/" + structure.get_id()[:4] + '.dcd', True)
+# def write_dcd_file(rec_list, input_files, output_dir):
+#     '''
+#     Write a DCD file containing the locations of the atoms whose residues have full alignment
+#     :param rec_list: list of protein records
+#     :param input_files: list of all input PDB files
+#     :param output_dir: output directory for .dcd files
+#     '''
+#
+#     parser = PDBParser()
+#     io = PDBIO()
+#
+#     for protein, file in zip(rec_list, input_files):                    # Loop thru each protein and PDB file
+#         structure = parser.get_structure(protein.id, file)              # Get the structure of each protein
+#
+#         with tempfile.NamedTemporaryFile(mode='w+') as fp:              # Using temp file to store partial PDB
+#             io.save(fp.name)
+#             traj = md.load_pdb(fp.name)                                 # Convert PDB to DCD file
+#             traj.save_dcd(output_dir + "/" + structure.get_id()[:4] + '.dcd', True)
 
 def get_atomic_coords(structure_dict):
     # Reorganize carbon coords. into lists for each respective atom
