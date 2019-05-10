@@ -95,13 +95,16 @@ def get_inputs(args):
     '''
     Get all the PDB files in the directory
     :param args: arguments from the user
-    :return: input directory, output directory and a list of the input PDB files
+    :return: input directory, output directory location of Clustal W executable
+                and a list of the input PDB files
     '''
     inputs_dir = args.argv[1]
 
     # Get all PDB input files and put in a list
     input_files = [(inputs_dir + "/" + f) for f in listdir(inputs_dir) \
                    if path.isfile(path.join(inputs_dir, f)) if not f.startswith(".") if f.endswith("pdb") or f.endswith(".ent")]
+
+    assert len(input_files) > 1, "There must be more than one PDB file in the input directory."
 
     with open(inputs_dir + '/structures_list.txt', 'r') as f:
         read_data = f.read().splitlines()
@@ -111,14 +114,14 @@ def get_inputs(args):
     NAME = 0 # Constant name of the protein
     CHAIN = 1 # Constant name of the chain to use e.g. "A", "B", etc...
 
-    for i in range(1, len(read_data)): # First two lines are column headers
+    for i in range(2, len(read_data)): # First two lines are column headers
         split_row = read_data[i].split()
 
         protein_name = split_row[NAME].upper()
         #tmp = split_row[CHAIN]
         structure_dict[protein_name] = Protein(protein_name, split_row[CHAIN])
 
-    return args.argv[1], args.argv[2], input_files, structure_dict
+    return args.argv[1], args.argv[2], args.argv[3], input_files, structure_dict
 
 def get_sequences(input_files, structure_dict):
     '''
@@ -150,17 +153,17 @@ def get_sequences(input_files, structure_dict):
 
     return tmpFASTAFP
 
-def do_msa(tmpFASTAFP):
+def do_msa(tmpFASTAFP, clustal_w_loc):
     '''
     Run ClustalW multiple sequence alignment
     :param tmpFASTAFP: file pointer to the FASTA file
     :return: file pointer to the temporary alignment file
     '''
 
-    clustalw_exe = "/Users/jim/DicksonLab/Code/Clustalw/clustalw2"     # Path to ClustalW installation
+    #clustal_w_loc = "/Users/jim/DicksonLab/Code/Clustalw/clustalw2"     # Path to ClustalW installation
     tmpPDBFP = tempfile.NamedTemporaryFile(mode='w+')
 
-    clustalw_cline = ClustalwCommandline(clustalw_exe, infile=tmpFASTAFP.name, outfile=tmpPDBFP.name)
+    clustalw_cline = ClustalwCommandline(clustal_w_loc, infile=tmpFASTAFP.name, outfile=tmpPDBFP.name)
     tmpPDBFP.flush()                                                    # Flush the buffer to make sure
                                                                         # it's been written
     clustalw_cline()
@@ -271,14 +274,14 @@ def correct_indices(structure_dict, alignment_indices):
 
     return alignment_indices
 
-def get_aligned_sequence(tmpFASTAFP, structure_dict):
+def get_aligned_sequence(tmpFASTAFP, structure_dict, clustal_w_loc):
     '''
     Use the Clustal alignment file to get slices of alignment
     :param tmpPDBFP: file pointer to Clustal alignment output
     :return: Dictionary containing the indexes that have full residue alignment for each protein
     '''
 
-    msa_output = do_msa(tmpFASTAFP)
+    msa_output = do_msa(tmpFASTAFP, clustal_w_loc)
 
     alignment_indices = get_consensus_sequences(msa_output, structure_dict)
     #remove_non_hetero_atoms(proteins)
@@ -525,10 +528,10 @@ def write_to_pdb(structure_dict):
         io.set_structure(structure.get_bio_struct())
         io.save(output_dir + "/" + structure.get_name() + '_shifted.pdb')
 
-inputs_dir, output_dir, input_files, structure_dict = get_inputs(sys)       # Get the provided inputs
+inputs_dir, output_dir, clustal_w_loc, input_files, structure_dict = get_inputs(sys)       # Get the provided inputs
 tmpFASTAFP = get_sequences(input_files, structure_dict)                     # Get the sequences
 
-get_aligned_sequence(tmpFASTAFP, structure_dict)                            # Get the fully aligned residues
+get_aligned_sequence(tmpFASTAFP, structure_dict, clustal_w_loc)                            # Get the fully aligned residues
 get_aligned_structure(structure_dict)                                       # Get the structurally aligned residues
 
 pcas = get_pca(structure_dict)
